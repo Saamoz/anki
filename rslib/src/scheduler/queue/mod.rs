@@ -140,6 +140,9 @@ pub(crate) struct BuryMode {
     pub(crate) bury_interday_learning: bool,
 }
 
+/// Queued cards whose answer states come from RWKV-Curve (when in use).
+const RWKV_QUEUED_CARDS_WITH_STATES: usize = 2;
+
 impl Collection {
     pub fn get_next_card(&mut self) -> Result<Option<QueuedCard>> {
         self.get_queued_cards(1, false, false)
@@ -174,7 +177,7 @@ impl Collection {
             queues.mark_top_card_shown(entries.first().map(QueueEntry::card_id));
         }
         let mut cards = Vec::with_capacity(entries.len());
-        for entry in entries {
+        for (index, entry) in entries.into_iter().enumerate() {
             let card = self
                 .storage
                 .get_card(entry.card_id())?
@@ -194,7 +197,14 @@ impl Collection {
                 (None, card)
             } else {
                 let (states, card) = self.get_scheduling_states_inner(card, None)?;
-                let states = self.rwkv_native_apply_curve_states(&card, states)?;
+                // RWKV states for the card shown and the next one; clients
+                // fetch the queue again after every answer, and AnswerCard
+                // computes them for any other card answered.
+                let states = if index < RWKV_QUEUED_CARDS_WITH_STATES {
+                    self.rwkv_native_apply_curve_states(&card, states)?
+                } else {
+                    states
+                };
                 (Some(states), card)
             };
             cards.push(QueuedCard {

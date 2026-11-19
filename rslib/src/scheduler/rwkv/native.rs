@@ -1254,14 +1254,35 @@ impl Collection {
         }
 
         let ease = rating_ease(answer.rating);
-        let prediction = self.state.rwkv_native.as_ref().and_then(|native| {
-            let review_count = native.resident.as_ref()?.review_count;
-            native
-                .predictions
-                .get(&card.id)
-                .filter(|prediction| prediction.review_count == review_count)
-                .cloned()
-        });
+        let cached = |col: &Collection| {
+            col.state.rwkv_native.as_ref().and_then(|native| {
+                let review_count = native.resident.as_ref()?.review_count;
+                native
+                    .predictions
+                    .get(&card.id)
+                    .filter(|prediction| prediction.review_count == review_count)
+                    .cloned()
+            })
+        };
+        let mut prediction = cached(self);
+        if prediction.is_none() && answer.rwkv_s90.is_none() {
+            // The client answered with states RWKV did not make (a card deep
+            // in a prefetched queue): predict now, and answer with
+            // RWKV-Curve's state for the chosen rating instead.
+            let (fsrs_states, card) = self.get_scheduling_states_inner(card.clone(), None)?;
+            if fsrs_states.current == answer.current_state {
+                let states = self.rwkv_native_apply_curve_states(&card, fsrs_states)?;
+                prediction = cached(self);
+                if prediction.as_ref().is_some_and(|p| p.curve_applied) {
+                    answer.new_state = match answer.rating {
+                        Rating::Again => states.again,
+                        Rating::Hard => states.hard,
+                        Rating::Good => states.good,
+                        Rating::Easy => states.easy,
+                    };
+                }
+            }
+        }
         if let Some(prediction) = prediction {
             if answer.rwkv_retrievability.is_none()
                 && prediction.retrievability.is_finite()
@@ -2027,6 +2048,50 @@ mod test {
             .map(|(_, p)| p)
             .collect();
         assert_same(&live, &reference);
+    }
+
+    #[test]
+    fn answers_with_rwkv_states_for_cards_deep_in_the_queue() {
+        if weights("sm92").is_none() {
+            return;
+        }
+        let mut fix = fixture(20, 8, true, false);
+        let dir = tempfile::tempdir().unwrap();
+        let _ = load(&mut fix.col, dir.path(), false);
+        let _ = fix.col.rwkv_native_sync(false).unwrap();
+
+        let queued = fix.col.get_queued_cards(5, false, false).unwrap();
+        let deep = queued.cards[3].clone();
+        let states = deep.states.unwrap();
+        let prediction = fix.col.rwkv_native_card_prediction(deep.card.id).unwrap();
+        // Beyond the head of the queue the states are FSRS's. Answering such
+        // a card (off the queue, as only the top card can be answered from
+        // it) still schedules with RWKV.
+        let fsrs_good = states.good;
+        fix.col
+            .answer_card(&mut CardAnswer {
+                card_id: deep.card.id,
+                current_state: states.current,
+                new_state: fsrs_good,
+                rating: Rating::Good,
+                answered_at: TimestampMillis::now(),
+                milliseconds_taken: 3_000,
+                custom_data: None,
+                desired_retention_override: None,
+                desired_retention_override_is_final: false,
+                rwkv_s90: None,
+                rwkv_retrievability: None,
+                rwkv_review_kind: None,
+                from_queue: false,
+            })
+            .unwrap();
+        let card = fix.col.storage.get_card(deep.card.id).unwrap().unwrap();
+        let stability = card.memory_state.unwrap().stability;
+        assert!(
+            (stability - prediction.s90s[2]).abs() <= 1e-2 * prediction.s90s[2],
+            "answered with RWKV's S90 {} rather than FSRS: {stability}",
+            prediction.s90s[2]
+        );
     }
 
     #[test]
