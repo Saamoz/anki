@@ -627,9 +627,16 @@ impl Collection {
     }
 
     pub(crate) fn rwkv_native_status(&self) -> Result<RwkvNativeStatus> {
+        let counts = self.rwkv_native_preset_counts()?;
         match self.state.rwkv_native.as_deref() {
-            Some(native) => Ok(native.status(self.rwkv_native_preset_counts()?)),
-            None => Ok(RwkvNativeStatus::default()),
+            Some(native) => Ok(native.status(counts)),
+            // Clients decide whether to load from these counts, so they are
+            // reported before anything is loaded.
+            None => Ok(RwkvNativeStatus {
+                curve_presets: counts.0,
+                instant_presets: counts.1,
+                ..Default::default()
+            }),
         }
     }
 
@@ -1879,6 +1886,14 @@ mod test {
         // python: int.from_bytes(hashlib.blake2b(b"abc", digest_size=8)
         //   .digest(), "big") & ((1 << 63) - 1)
         assert_eq!(stable_addon_preset_id("abc"), 6_393_727_014_797_677_913);
+    }
+
+    #[test]
+    fn status_reports_rwkv_presets_before_loading() {
+        let fix = fixture(1, 1, true, true);
+        let status = fix.col.rwkv_native_status().unwrap();
+        assert!(!status.loaded);
+        assert_eq!((status.curve_presets, status.instant_presets), (1, 1));
     }
 
     #[test]
