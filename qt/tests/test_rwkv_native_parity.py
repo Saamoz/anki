@@ -33,7 +33,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _synthetic_collection(path: Path, cards: int, seed: int) -> tuple[Collection, list[int]]:
+def _synthetic_collection(
+    path: Path, cards: int, seed: int
+) -> tuple[Collection, list[int]]:
     """A collection with a plausible review history over the past ~300 days."""
     col = Collection(str(path))
     # Reviews must fall after the creation day, or their day offsets clamp.
@@ -62,7 +64,9 @@ def _synthetic_collection(path: Path, cards: int, seed: int) -> tuple[Collection
         at = now - 300 * DAY_MS + index * 3_600_000
         interval = 1
         for review in range(12):
-            ease = 1 if review > 0 and rng.random() < 0.1 else rng.choice((3, 3, 3, 2, 4))
+            ease = (
+                1 if review > 0 and rng.random() < 0.1 else rng.choice((3, 3, 3, 2, 4))
+            )
             kind = 0 if review == 0 else (2 if ease == 1 else 1)
             rows.append((at, card_id, ease, interval, kind, rng.randint(2_000, 15_000)))
             interval = 1 if ease == 1 else max(1, int(interval * rng.uniform(1.8, 3.0)))
@@ -112,7 +116,9 @@ def _python_predictions(
     out = {}
     for card_id in card_ids:
         card = col.get_card(card_id)
-        reviewer._v3 = SimpleNamespace(states=col._backend.get_scheduling_states(card_id))
+        reviewer._v3 = SimpleNamespace(
+            states=col._backend.get_scheduling_states(card_id)
+        )
         out[card_id] = backend.predict_review_curve(reviewer=reviewer, card=card)
     return out
 
@@ -134,7 +140,9 @@ def _assert_parity(python: dict[int, object], native: dict[int, object]) -> None
     deviation = {"r": 0.0, "interval": 0.0, "s90": 0.0}
     for card_id, expected in python.items():
         actual = native[card_id]
-        deviation["r"] = max(deviation["r"], abs(actual.retrievability - expected.retrievability))
+        deviation["r"] = max(
+            deviation["r"], abs(actual.retrievability - expected.retrievability)
+        )
         for field, index in (("again", 0), ("hard", 1), ("good", 2), ("easy", 3)):
             for key, values, overrides in (
                 ("interval", actual.intervals, expected.interval_overrides),
@@ -142,8 +150,12 @@ def _assert_parity(python: dict[int, object], native: dict[int, object]) -> None
             ):
                 value = getattr(overrides, field)
                 if value:
-                    deviation[key] = max(deviation[key], abs(values[index] - value) / value)
-    print(f"max |dR|={deviation['r']:.2e} rel interval={deviation['interval']:.2e} rel s90={deviation['s90']:.2e}")
+                    deviation[key] = max(
+                        deviation[key], abs(values[index] - value) / value
+                    )
+    print(
+        f"max |dR|={deviation['r']:.2e} rel interval={deviation['interval']:.2e} rel s90={deviation['s90']:.2e}"
+    )
     for card_id, expected in python.items():
         actual = native[card_id]
         assert actual.available
@@ -159,7 +171,9 @@ def _assert_parity(python: dict[int, object], native: dict[int, object]) -> None
                     interval, rel=2e-3, abs=3 / 86_400
                 )
             if s90 is not None:
-                assert actual.s90s[index] == pytest.approx(s90, rel=2e-3, abs=3 / 86_400)
+                assert actual.s90s[index] == pytest.approx(
+                    s90, rel=2e-3, abs=3 / 86_400
+                )
 
 
 @pytest.mark.parametrize(
@@ -176,7 +190,9 @@ def test_native_rwkv_matches_desktop_python(
         assert status.loaded and status.has_curve
         status = col._backend.rwkv_native_sync(force_full_rebuild=False)
         assert status.ready and status.last_sync_full_rebuild
-        native = {cid: col._backend.rwkv_native_card_prediction(cid=cid) for cid in card_ids}
+        native = {
+            cid: col._backend.rwkv_native_card_prediction(cid=cid) for cid in card_ids
+        }
         _assert_parity(python, native)
 
         # New reviews: the native path replays only them; the desktop path
@@ -194,7 +210,9 @@ def test_native_rwkv_matches_desktop_python(
         assert not status.last_sync_full_rebuild
         assert status.last_sync_replayed_reviews == 8
         python = _python_predictions(col, card_ids, precision)
-        native = {cid: col._backend.rwkv_native_card_prediction(cid=cid) for cid in card_ids}
+        native = {
+            cid: col._backend.rwkv_native_card_prediction(cid=cid) for cid in card_ids
+        }
         _assert_parity(python, native)
     finally:
         col.close()
@@ -210,8 +228,65 @@ def test_native_curve_states_use_rwkv_intervals(tmp_path: Path) -> None:
         prediction = col._backend.rwkv_native_card_prediction(cid=card_ids[0])
         good = states.good.normal
         assert good.WhichOneof("kind") in ("review", "relearning")
-        review = good.review if good.WhichOneof("kind") == "review" else good.relearning.review
-        assert review.memory_state.stability == pytest.approx(prediction.s90s[2], rel=1e-3)
+        review = (
+            good.review
+            if good.WhichOneof("kind") == "review"
+            else good.relearning.review
+        )
+        assert review.memory_state.stability == pytest.approx(
+            prediction.s90s[2], rel=1e-3
+        )
         assert states != fsrs_states
+    finally:
+        col.close()
+
+
+def test_desktop_flag_schedules_through_the_native_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aqt import rwkv_native
+
+    monkeypatch.setenv(rwkv_native.NATIVE_ENV, "1")
+    monkeypatch.setattr(rwkv_native, "_register_hooks", lambda: None)
+    col, card_ids = _synthetic_collection(tmp_path / "collection.anki2", 20, 4)
+    try:
+        mw = SimpleNamespace(
+            col=col,
+            pm=SimpleNamespace(
+                profile={"rwkvModel": "sm92", "rwkvStatePrecision": "f32"},
+                profileFolder=lambda: str(tmp_path),
+            ),
+        )
+        assert rwkv_native.configure(mw)
+        status = col._backend.rwkv_native_get_status()
+        assert status.loaded and status.curve_model == "sm92"
+        assert (tmp_path / rwkv_native.STATE_DIR).parent == tmp_path
+
+        queued = col.sched.get_queued_cards()
+        card = queued.cards[0]
+        prediction = col._backend.rwkv_native_card_prediction(cid=card.card.id)
+        good = card.states.good.normal
+        review = (
+            good.review
+            if good.WhichOneof("kind") == "review"
+            else good.relearning.review
+        )
+        assert review.memory_state.stability == pytest.approx(
+            prediction.s90s[2], rel=1e-3
+        )
+
+        before = col._backend.rwkv_native_get_status().review_count
+        answered = col.get_card(card.card.id)
+        answered.start_timer()
+        answer = col.sched.build_answer(card=answered, states=card.states, rating=3)
+        col.sched.answer_card(answer)
+        status = col._backend.rwkv_native_get_status()
+        assert status.review_count == before + 1
+        assert not status.last_sync_full_rebuild
+        cached = col.db.scalar(
+            "select count() from retrievability_cache.search_stats_rwkv_review_retrievability"
+            " where source = 'rwkv_review'"
+        )
+        assert cached == 1, "the answer stores its RWKV prediction"
     finally:
         col.close()

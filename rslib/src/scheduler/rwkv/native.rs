@@ -1217,10 +1217,12 @@ impl Collection {
     /// Fills the RWKV fields of an answer the client left empty, before the
     /// answer is applied (`set_answer_rwkv_metadata`).
     pub(crate) fn rwkv_native_fill_answer(&mut self, answer: &mut CardAnswer) -> Result<()> {
+        // Fields the client already set are kept: the desktop sets the
+        // review kind itself, and shares this code for the rest.
         if !self.rwkv_native_loaded()
-            || answer.rwkv_s90.is_some()
-            || answer.rwkv_retrievability.is_some()
-            || answer.rwkv_review_kind.is_some()
+            || (answer.rwkv_s90.is_some()
+                && answer.rwkv_retrievability.is_some()
+                && answer.rwkv_review_kind.is_some())
         {
             return Ok(());
         }
@@ -1245,9 +1247,11 @@ impl Collection {
         {
             base = original;
         }
-        let review_state =
-            self.rwkv_native_live_review_state(card.id, base, answered_at, &timing)?;
-        answer.rwkv_review_kind = raw_review_kind(review_state);
+        if answer.rwkv_review_kind.is_none() {
+            let review_state =
+                self.rwkv_native_live_review_state(card.id, base, answered_at, &timing)?;
+            answer.rwkv_review_kind = raw_review_kind(review_state);
+        }
 
         let ease = rating_ease(answer.rating);
         let prediction = self.state.rwkv_native.as_ref().and_then(|native| {
@@ -1259,12 +1263,13 @@ impl Collection {
                 .cloned()
         });
         if let Some(prediction) = prediction {
-            if prediction.retrievability.is_finite()
+            if answer.rwkv_retrievability.is_none()
+                && prediction.retrievability.is_finite()
                 && (0.0..=1.0).contains(&prediction.retrievability)
             {
                 answer.rwkv_retrievability = Some(prediction.retrievability);
             }
-            if prediction.curve_applied {
+            if prediction.curve_applied && answer.rwkv_s90.is_none() {
                 if let Some(s90) = prediction.s90s[(ease - 1) as usize] {
                     if s90.is_finite() && s90 > 0.0 {
                         answer.rwkv_s90 = Some(s90);

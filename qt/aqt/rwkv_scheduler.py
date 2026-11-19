@@ -4173,6 +4173,13 @@ def _temporary_reviewer_backend_operation(
 
 def configure_reviewer_backend_from_environment() -> bool:
     import aqt
+    from aqt import rwkv_native
+
+    if rwkv_native.enabled():
+        # The collection backend schedules RWKV itself; leave no Python
+        # backend, so nothing here overrides its answer states.
+        rwkv_native.configure(aqt.mw)
+        return False
 
     with _reviewer_backend_state_lock:
         pending = getattr(aqt.mw, "_rwkv_model_change_pending", None) is not None

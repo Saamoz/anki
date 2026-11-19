@@ -39,6 +39,7 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 #### New Features
 
+- **Native RWKV scheduling (opt-in).** Starting Anki with `ANKI_RWKV_NATIVE=1` runs RWKV-Curve and RWKV-Instant inside the Rust collection backend instead of the Python scheduler, the same implementation that mobile clients built on the backend use. RWKV card-info rows, stats-graph scores, workload simulation and the answer-time estimate are unavailable in this mode.
 - **Explore recall by answer time.** Card Info now estimates the chance of answering within 2, 4, 6, 8, 10, 15, 20 and 30 seconds if you press Good, and charts the predicted recall rate for answers under each threshold. The estimates are available when the Small Curve model is active and the card was last reviewed on an earlier day.
 
 #### Fixes
@@ -54,6 +55,7 @@ Changes since [build 115](https://github.com/JSchoreels/anki/releases/tag/26.09.
 
 ### Technical details
 
+- The collection backend gained `RwkvNative*` scheduler RPCs (load, sync, checkpoint, card prediction, calibration), appended so existing method indices are unchanged. Once loaded, `GetQueuedCards`/`GetSchedulingStates` return RWKV-Curve states, `AnswerCard` fills the RWKV answer metadata and advances model state, and RWKV-Instant queues are scored before they are built. History sync reuses the resident state or the newest checkpoint when the canonical history only grew; an answer on an unchanged history replays only that card's new reviews (17 ms instead of 250 ms on 30,000 cards). `qt/tests/test_rwkv_native_parity.py` checks recall, intervals and S90 against the Python path (|ΔR| < 1e-6).
 - Legacy SQL recall functions use the displayed Stability (S90) as the interval at which predicted recall reaches 90%.
 - The FSRS engine includes the training and simulation fixes and the updated FSRS-6 optimizer from [7.0.0](https://github.com/open-spaced-repetition/fsrs-rs/releases/tag/v7.0.0). Anki now uses the engine to reconstruct memory states from legacy add-on writes and truncated review histories. [fsrs-rs #485](https://github.com/open-spaced-repetition/fsrs-rs/pull/485)
 - **Answer-time thresholds:** The time head's bin probabilities are interpolated in log time. The graph combines them with the active RWKV answer-button probabilities to estimate recall conditional on answering within each threshold; it does not measure the effect of answering faster. The model weights are unchanged from build 115. See [answer-time evaluation](https://github.com/JSchoreels/anki/blob/main/docs/rwkv-answer-time-2026-11-01.MD).
