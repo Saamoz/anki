@@ -28,6 +28,7 @@ impl Collection {
                 preserved_learning_start_cutoffs: input.preserved_learning_start_cutoffs,
                 first_review_uses_creation: input.first_review_uses_creation,
                 recovery_checkpoint_max_age_millis: input.recovery_checkpoint_max_age_millis,
+                ..Default::default()
             },
             |review, hash, is_checkpoint| {
                 let row = review.row;

@@ -340,8 +340,11 @@ impl Collection {
         desired_retention_override: Option<f32>,
     ) -> Result<SchedulingStates> {
         let card = self.storage.get_card(cid)?.or_not_found(cid)?;
-        self.get_scheduling_states_inner(card, desired_retention_override)
-            .map(|r| r.0)
+        let (states, card) = self.get_scheduling_states_inner(card, desired_retention_override)?;
+        if desired_retention_override.is_none() {
+            return self.rwkv_native_apply_curve_states(&card, states);
+        }
+        Ok(states)
     }
 
     pub(crate) fn get_scheduling_states_inner(
@@ -459,7 +462,18 @@ impl Collection {
     /// Answer card, writing its new state to the database.
     /// Provided [CardAnswer] has its answer time capped to deck preset.
     pub fn answer_card(&mut self, answer: &mut CardAnswer) -> Result<OpOutput<()>> {
-        self.transact(Op::AnswerCard, |col| col.answer_card_inner(answer))
+        let rwkv_unchanged = self.rwkv_native_loaded() && self.rwkv_native_unchanged_since_sync();
+        if self.rwkv_native_loaded() {
+            // Native RWKV fills the metadata a desktop client would supply.
+            if let Err(err) = self.rwkv_native_fill_answer(answer) {
+                tracing::warn!(?err, "RWKV answer metadata unavailable");
+            }
+        }
+        let output = self.transact(Op::AnswerCard, |col| col.answer_card_inner(answer))?;
+        if self.rwkv_native_loaded() {
+            self.rwkv_native_after_answer(answer.card_id, rwkv_unchanged);
+        }
+        Ok(output)
     }
 
     pub(crate) fn answer_card_inner(&mut self, answer: &mut CardAnswer) -> Result<()> {

@@ -769,14 +769,20 @@ impl SqliteStorage {
         &self,
         ignored_review_ids: &[RevlogId],
     ) -> Result<(Vec<RwkvHistoricalReviewRow>, Vec<i64>)> {
-        self.rwkv_historical_review_rows_with_cutoffs(ignored_review_ids, &HashMap::new())
+        self.rwkv_historical_review_rows_with_cutoffs(ignored_review_ids, &HashMap::new(), None)
     }
 
+    /// With `only_card`, returns that card's rows only. Every rule here is per
+    /// card, so they are exactly the card's rows of the full history.
     pub(crate) fn rwkv_historical_review_rows_with_cutoffs(
         &self,
         ignored_review_ids: &[RevlogId],
         preserved_learning_start_cutoffs: &HashMap<i64, i64>,
+        only_card: Option<CardId>,
     ) -> Result<(Vec<RwkvHistoricalReviewRow>, Vec<i64>)> {
+        let card_clause = only_card
+            .map(|card_id| format!("and r.cid = {}", card_id.0))
+            .unwrap_or_default();
         let (ignored_clause, active_ignored_review_ids) = if ignored_review_ids.is_empty() {
             (String::new(), Vec::new())
         } else {
@@ -834,6 +840,7 @@ where r.ease between 1 and 4
   and r.id > coalesce(resets.reset_id, 0)
   and r.id > ({RWKV_HISTORY_RESET_AFTER_SQL})
   {ignored_clause}
+  {card_clause}
 order by r.id"
         );
         let mut rows = self

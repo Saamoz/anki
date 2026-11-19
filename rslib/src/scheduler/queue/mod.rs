@@ -194,6 +194,7 @@ impl Collection {
                 (None, card)
             } else {
                 let (states, card) = self.get_scheduling_states_inner(card, None)?;
+                let states = self.rwkv_native_apply_curve_states(&card, states)?;
                 (Some(states), card)
             };
             cards.push(QueuedCard {
@@ -443,6 +444,9 @@ impl Collection {
     pub(crate) fn get_queues(&mut self) -> Result<&mut CardQueues> {
         let deck = self.get_current_deck()?;
         self.clear_queues_if_day_changed()?;
+        if self.rwkv_native_loaded() {
+            self.rwkv_native_prepare_queue_scores(&deck)?;
+        }
         if self.state.card_queues.is_none()
             || self
                 .state

@@ -36,6 +36,7 @@ use crate::search::StateKind;
 use crate::storage::RwkvHistoricalReviewRow;
 
 mod history;
+pub(crate) mod native;
 
 const RWKV_HISTORY_HASH_DOMAIN: &[u8] = b"anki-rwkv-state-cache-history-v1\0";
 
@@ -44,6 +45,9 @@ struct RwkvHistoricalReplayOptions {
     preserved_learning_start_cutoffs: HashMap<i64, i64>,
     first_review_uses_creation: Option<bool>,
     recovery_checkpoint_max_age_millis: Option<i64>,
+    /// Visit one card's reviews only. Their rows, elapsed times and presets
+    /// match the full traversal's; the hashes chain over this card alone.
+    only_card: Option<CardId>,
 }
 
 pub(crate) struct RwkvReviewRescheduleItem {
@@ -84,6 +88,7 @@ impl Collection {
             self.storage.rwkv_historical_review_rows_with_cutoffs(
                 &ignored_review_ids,
                 &options.preserved_learning_start_cutoffs,
+                options.only_card,
             )?;
         let queried_review_count = rows.len() as u64;
         let checkpoint_review_count = options.recovery_checkpoint_max_age_millis.and_then(|age| {
