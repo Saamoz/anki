@@ -163,6 +163,24 @@ service SchedulerService {
   // Comparison-only predictions. These do not change card or review state.
   rpc FsrsSixCurrentScores(cards.CardIds) returns (Fsrs6CurrentScoresResponse);
   rpc FsrsSixComparisonFingerprint(generic.String) returns (generic.String);
+  // Native RWKV runtime. Once loaded, the collection backend applies
+  // RWKV-Curve answer states in GetQueuedCards, fills RWKV answer metadata
+  // and advances model state in AnswerCard, and scores RWKV-Instant review
+  // queues itself, so a client needs no RWKV logic of its own. Appended last
+  // so existing method indices do not move.
+  rpc RwkvNativeLoad(RwkvNativeLoadRequest) returns (RwkvNativeStatus);
+  rpc RwkvNativeUnload(generic.Empty) returns (generic.Empty);
+  rpc RwkvNativeGetStatus(generic.Empty) returns (RwkvNativeStatus);
+  // Brings the model state in line with the review history: replays new
+  // reviews, or rebuilds from scratch when the history changed earlier on.
+  // Reports progress as Progress.rwkv_rebuild.
+  rpc RwkvNativeSync(RwkvNativeSyncRequest) returns (RwkvNativeStatus);
+  // Persists the model state, so the next load replays only newer reviews.
+  rpc RwkvNativeCheckpoint(generic.Empty) returns (RwkvNativeStatus);
+  rpc RwkvNativeCardPrediction(cards.CardId)
+      returns (RwkvNativeCardPredictionResponse);
+  rpc RwkvNativeCalibration(RwkvNativeCalibrationRequest)
+      returns (RwkvNativeCalibrationResponse);
 }
 
 // Implicitly includes any of the above methods that are not listed in the
@@ -1189,4 +1207,83 @@ message RwkvReviewInputRowsForCardsResponse {
   uint32 disabled_config_cards = 4;
   uint32 deck_configs = 5;
   uint32 searched_cards = 6;
+}
+
+message RwkvNativeLoadRequest {
+  // Two-head model (RWKV-Curve, and RWKV-Instant unless an instant model is
+  // given), e.g. "sm92". Optional when only RWKV-Instant is used.
+  optional string curve_model_path = 1;
+  string curve_model = 2;
+  // Instant-only model beside the two-head model, e.g. "sm98".
+  optional string instant_model_path = 3;
+  optional string instant_model = 4;
+  // "f32", "int8" or "cards_int4_notes_int8".
+  string state_precision = 5;
+  // Folder for the persistent state store; not synced.
+  string state_dir = 6;
+  // Answers between automatic incremental checkpoints; 0 uses the default.
+  uint32 checkpoint_every_answers = 7;
+}
+
+message RwkvNativeSyncRequest {
+  bool force_full_rebuild = 1;
+}
+
+message RwkvNativeStatus {
+  bool loaded = 1;
+  // The model state matches the review history.
+  bool ready = 2;
+  string curve_model = 3;
+  string instant_model = 4;
+  bool paired = 5;
+  bool has_curve = 6;
+  uint64 review_count = 7;
+  int64 last_review_id = 8;
+  // What the last sync did.
+  uint64 last_sync_replayed_reviews = 9;
+  bool last_sync_full_rebuild = 10;
+  bool last_sync_restored_checkpoint = 11;
+  uint32 last_sync_millis = 12;
+  // Reviews in the newest persisted checkpoint.
+  uint64 checkpoint_review_count = 13;
+  // Presets using each scheduler.
+  uint32 curve_presets = 14;
+  uint32 instant_presets = 15;
+  string state_precision = 16;
+  string last_error = 17;
+}
+
+message RwkvNativeCardPredictionResponse {
+  bool available = 1;
+  bool curve_enabled = 2;
+  bool instant_enabled = 3;
+  float retrievability = 4;
+  optional float curve_retrievability = 5;
+  optional float current_s90 = 6;
+  // Again, Hard, Good, Easy; zero when absent.
+  repeated float intervals = 7;
+  repeated float s90s = 8;
+  repeated float button_probabilities = 9;
+  float target_retention = 10;
+}
+
+message RwkvNativeCalibrationRequest {
+  uint32 buckets = 1;
+}
+
+message RwkvNativeCalibrationResponse {
+  message Bucket {
+    float predicted_min = 1;
+    float predicted_max = 2;
+    float mean_predicted = 3;
+    float observed = 4;
+    uint32 count = 5;
+  }
+  repeated Bucket buckets = 1;
+  uint32 total = 2;
+  float log_loss = 3;
+  // Count-weighted RMSE between bucket mean prediction and recall rate.
+  float rmse_bins = 4;
+  float mean_predicted = 5;
+  float mean_observed = 6;
 }

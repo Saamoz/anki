@@ -18,6 +18,7 @@ use crate::scheduler::fsrs::memory_state::ComputeMemoryProgress;
 use crate::scheduler::fsrs::params::ComputeAllParamsProgress;
 use crate::scheduler::fsrs::params::ComputeParamsProgress;
 use crate::scheduler::fsrs::retention::ComputeRetentionProgress;
+use crate::scheduler::rwkv::native::RwkvRebuildProgress;
 use crate::sync::collection::normal::NormalSyncProgress;
 use crate::sync::collection::progress::FullSyncProgress;
 use crate::sync::collection::progress::SyncStage;
@@ -145,6 +146,7 @@ pub enum Progress {
     ComputeRetention(ComputeRetentionProgress),
     ComputeMemory(ComputeMemoryProgress),
     DownloadUpdate(DownloadUpdateProgress),
+    RwkvRebuild(RwkvRebuildProgress),
 }
 
 pub(crate) fn progress_to_proto(
@@ -303,6 +305,13 @@ pub(crate) fn progress_to_proto(
                     total_bytes: progress.total_bytes as u32,
                 })
             }
+            Progress::RwkvRebuild(progress) => {
+                Value::RwkvRebuild(anki_proto::collection::RwkvRebuildProgress {
+                    stage: progress.stage.as_str().into(),
+                    current: progress.current,
+                    total: progress.total,
+                })
+            }
         }
     } else {
         Value::None(anki_proto::generic::Empty {})
@@ -387,6 +396,12 @@ impl From<ComputeRetentionProgress> for Progress {
 impl From<ComputeMemoryProgress> for Progress {
     fn from(p: ComputeMemoryProgress) -> Self {
         Progress::ComputeMemory(p)
+    }
+}
+
+impl From<RwkvRebuildProgress> for Progress {
+    fn from(p: RwkvRebuildProgress) -> Self {
+        Progress::RwkvRebuild(p)
     }
 }
 

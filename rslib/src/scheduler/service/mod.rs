@@ -913,6 +913,47 @@ impl crate::services::SchedulerService for Collection {
         Ok(FsrsIntervalAtRetrievabilityByConfigBatchResponse { items })
     }
 
+    fn rwkv_native_load(
+        &mut self,
+        input: scheduler::RwkvNativeLoadRequest,
+    ) -> Result<scheduler::RwkvNativeStatus> {
+        Collection::rwkv_native_load(self, input)
+    }
+
+    fn rwkv_native_unload(&mut self) -> Result<()> {
+        Collection::rwkv_native_unload(self);
+        Ok(())
+    }
+
+    fn rwkv_native_get_status(&mut self) -> Result<scheduler::RwkvNativeStatus> {
+        self.rwkv_native_status()
+    }
+
+    fn rwkv_native_sync(
+        &mut self,
+        input: scheduler::RwkvNativeSyncRequest,
+    ) -> Result<scheduler::RwkvNativeStatus> {
+        Collection::rwkv_native_sync(self, input.force_full_rebuild)
+    }
+
+    fn rwkv_native_checkpoint(&mut self) -> Result<scheduler::RwkvNativeStatus> {
+        Collection::rwkv_native_checkpoint(self)
+    }
+
+    fn rwkv_native_card_prediction(
+        &mut self,
+        input: cards::CardId,
+    ) -> Result<scheduler::RwkvNativeCardPredictionResponse> {
+        Collection::rwkv_native_card_prediction(self, input.cid.into())
+    }
+
+    fn rwkv_native_calibration(
+        &mut self,
+        input: scheduler::RwkvNativeCalibrationRequest,
+    ) -> Result<scheduler::RwkvNativeCalibrationResponse> {
+        Collection::rwkv_native_calibration(self, input.buckets)
+    }
+
     fn set_rwkv_review_queue_scores(&mut self, input: RwkvReviewQueueScoresRequest) -> Result<()> {
         let scores = rwkv_score_entries(input.scores)?;
         self.set_rwkv_review_queue_score_entries(input.deck_id.into(), scores)

@@ -138,6 +138,7 @@ message Progress {
     ComputeMemoryProgress compute_memory = 11;
     DownloadUpdateProgress download_update = 12;
     ComputeAllParamsProgress compute_all_params = 13;
+    RwkvRebuildProgress rwkv_rebuild = 14;
   }
 }
 
@@ -179,6 +180,13 @@ message ComputeAllParamsProgress {
     bool skipped = 8;
     ComputeParamsProgress.Phase phase = 9;
   }
+}
+
+message RwkvRebuildProgress {
+  // "history", "replay" or "saving".
+  string stage = 1;
+  uint32 current = 2;
+  uint32 total = 3;
 }
 
 message ComputeRetentionProgress {

@@ -146,6 +146,7 @@ pub struct CollectionState {
     pub(crate) card_queues: Option<CardQueues>,
     pub(crate) pending_new_review_mix: Option<NewReviewMixProgress>,
     pub(crate) rwkv_retrievability_scores: Option<RwkvRetrievabilityScores>,
+    pub(crate) rwkv_native: Option<Box<crate::scheduler::rwkv::native::NativeRwkv>>,
     pub(crate) fsrs_preset_overlay_cache: Option<FsrsPresetOverlayCache>,
     pub(crate) active_browser_columns: Option<Arc<Vec<browser_table::Column>>>,
     /// True if legacy Python code has executed SQL that has modified the
