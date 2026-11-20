@@ -602,6 +602,23 @@ impl RwkvRuntime {
         })
     }
 
+    /// A card's forgetting curves and memory for display; see
+    /// [`ReviewCurveView`]. Needs the curve model.
+    pub fn review_curve_view(
+        &mut self,
+        input: &ReviewInput,
+        state: ReviewState<'_>,
+        days: &[f32],
+    ) -> io::Result<ReviewCurveView> {
+        return_if_instant_only!(self, _engine => Err(invalid_input(
+            "the RWKV curve view needs the RWKV-Curve model",
+        )));
+        dispatch!(self, engine, engine.review_curve_view(input, state, days), pair => {
+            let (release_state, _) = paired::split_review_state(&state)?;
+            pair.release.review_curve_view(input, paired::as_review_state(&release_state), days)
+        })
+    }
+
     pub fn predict_many(
         &mut self,
         requests: Vec<ReviewPredictionRequest>,
