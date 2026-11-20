@@ -478,3 +478,20 @@ pub struct RwkvWorkloadForecastOutput {
     /// new, lapses and seconds. Ordinary stochastic forecasts leave this empty.
     pub scenarios: Option<Vec<Vec<[f32; 5]>>>,
 }
+
+/// A look inside the curve model for one card, for display.
+#[derive(Debug, Clone, Default)]
+pub struct ReviewCurveView {
+    /// Predicted recall at each requested number of days from now.
+    pub now: Vec<f32>,
+    /// The same, after answering Again, Hard, Good or Easy now.
+    pub answers: [Vec<f32>; 4],
+    /// The current forgetting curve is a weighted blend of simple curves:
+    /// each one's days until recall falls to 90%, and its weight.
+    pub components: Vec<(f32, f32)>,
+    /// The card's first-layer RWKV memory matrices, one per head, each
+    /// `memory_side` × `memory_side` row-major; empty before the card's
+    /// first review.
+    pub memory: Vec<f32>,
+    pub memory_side: u32,
+}

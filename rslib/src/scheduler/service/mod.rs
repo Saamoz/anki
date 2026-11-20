@@ -954,6 +954,18 @@ impl crate::services::SchedulerService for Collection {
         Collection::rwkv_native_calibration(self, input.buckets)
     }
 
+    fn rwkv_native_card_curve(
+        &mut self,
+        input: scheduler::RwkvNativeCardCurveRequest,
+    ) -> Result<scheduler::RwkvNativeCardCurveResponse> {
+        Collection::rwkv_native_card_curve(
+            self,
+            (input.card_id != 0).then_some(CardId(input.card_id)),
+            input.shuffle,
+            &input.days,
+        )
+    }
+
     fn set_rwkv_review_queue_scores(&mut self, input: RwkvReviewQueueScoresRequest) -> Result<()> {
         let scores = rwkv_score_entries(input.scores)?;
         self.set_rwkv_review_queue_score_entries(input.deck_id.into(), scores)

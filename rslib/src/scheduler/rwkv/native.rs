@@ -27,8 +27,10 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use anki_proto::scheduler::rwkv_native_card_curve_response as card_curve;
 use anki_proto::scheduler::RwkvHistoricalReviewFingerprintRequest;
 use anki_proto::scheduler::RwkvNativeCalibrationResponse;
+use anki_proto::scheduler::RwkvNativeCardCurveResponse;
 use anki_proto::scheduler::RwkvNativeCardPredictionResponse;
 use anki_proto::scheduler::RwkvNativeLoadRequest;
 use anki_proto::scheduler::RwkvNativeStatus;
@@ -1583,6 +1585,162 @@ impl Collection {
         })
     }
 
+    /// RWKV-Curve's view of one card, for display; changes nothing.
+    /// Without `card_id`, picks a reviewed card whose preset uses RWKV.
+    pub(crate) fn rwkv_native_card_curve(
+        &mut self,
+        card_id: Option<CardId>,
+        shuffle: bool,
+        days: &[f32],
+    ) -> Result<RwkvNativeCardCurveResponse> {
+        let card_id = match card_id {
+            Some(card_id) => card_id,
+            None => match self.rwkv_native_pick_card(shuffle)? {
+                Some(card_id) => card_id,
+                None => return Ok(Default::default()),
+            },
+        };
+        let card = self.storage.get_card(card_id)?.or_not_found(card_id)?;
+        let Some(config) = self.rwkv_native_config_for_card(&card)? else {
+            return Ok(Default::default());
+        };
+        let days: Vec<f32> = days
+            .iter()
+            .copied()
+            .filter(|d| d.is_finite() && *d >= 0.0)
+            .take(2_000)
+            .collect();
+        let (states, card) = self.get_scheduling_states_inner(card, None)?;
+        let view = self.with_rwkv_native(|col, native| {
+            if !native.has_curve {
+                return Ok(None);
+            }
+            col.rwkv_native_ensure_synced(native)?;
+            let timing = col.timing_today()?;
+            let mut card = card.clone();
+            col.populate_rwkv_last_review_times(std::slice::from_mut(&mut card))?;
+            let dynamic = states
+                .dynamic_desired_retention_enabled
+                .then_some(states.dynamic_desired_retentions)
+                .flatten();
+            let (input, target) =
+                col.rwkv_native_query_input(&card, states.current, &config, dynamic, &timing)?;
+            let state = native.runtime.warm_up_state(&input).map_err(io_err)?;
+            let view = native
+                .runtime
+                .review_curve_view(
+                    &input,
+                    EngineReviewState {
+                        card: state.card.as_deref(),
+                        deck: state.deck.as_deref(),
+                        note: state.note.as_deref(),
+                        preset: state.preset.as_deref(),
+                        global: state.global.as_deref(),
+                    },
+                    &days,
+                )
+                .map_err(io_err)?;
+            Ok(Some((view, target)))
+        })?;
+        let Some((view, target)) = view.flatten() else {
+            return Ok(Default::default());
+        };
+        let [again, hard, good, easy] = view.answers;
+        let rendered = self.rwkv_native_card_text(card_id);
+        Ok(RwkvNativeCardCurveResponse {
+            available: true,
+            days,
+            now: view.now,
+            again,
+            hard,
+            good,
+            easy,
+            components: view
+                .components
+                .into_iter()
+                .map(|(s90_days, weight)| card_curve::Component { s90_days, weight })
+                .collect(),
+            memory: view.memory,
+            memory_side: view.memory_side,
+            target_retention: target,
+            reviews: self.rwkv_native_card_reviews(card_id)?,
+            card_id: card_id.0,
+            question: rendered.0,
+            answer: rendered.1,
+        })
+    }
+
+    fn rwkv_native_pick_card(&mut self, shuffle: bool) -> Result<Option<CardId>> {
+        let sql = if shuffle {
+            "select cid from (select distinct cid from revlog where ease between 1 and 4)
+             order by random() limit 200"
+        } else {
+            "select cid from revlog where ease between 1 and 4
+             group by cid order by max(id) desc limit 200"
+        };
+        let candidates: Vec<CardId> = self
+            .storage
+            .db
+            .prepare(sql)?
+            .query_map([], |row| row.get(0).map(CardId))?
+            .collect::<rusqlite::Result<_>>()?;
+        for card_id in candidates {
+            let Some(card) = self.storage.get_card(card_id)? else {
+                continue;
+            };
+            if self.rwkv_native_config_for_card(&card)?.is_some() {
+                return Ok(Some(card_id));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The card's question and answer as one line of plain text each; the
+    /// answer leaves out the question it repeats.
+    fn rwkv_native_card_text(&mut self, card_id: CardId) -> (String, String) {
+        let Ok(output) = self.render_existing_card(card_id, true, false) else {
+            return Default::default();
+        };
+        let text = |html: &str| {
+            crate::text::html_to_text_line(html, false)
+                .trim()
+                .to_string()
+        };
+        let question = text(&output.question());
+        let answer = text(&output.answer());
+        let answer = answer
+            .strip_prefix(question.as_str())
+            .map(|rest| rest.trim().to_string())
+            .filter(|rest| !rest.is_empty())
+            .unwrap_or(answer);
+        (question, answer)
+    }
+
+    /// The card's answers, oldest first, with the prediction replay recorded
+    /// just before each.
+    fn rwkv_native_card_reviews(&mut self, card_id: CardId) -> Result<Vec<card_curve::Review>> {
+        let sql = "select r.id, r.ease, p.prediction
+             from revlog r
+             left join retrievability_cache.search_stats_rwkv_review_retrievability p
+               on p.revlog_id = r.id and p.source = ?2 and p.sample_role = 'final_fit'
+             where r.cid = ?1 and r.ease between 1 and 4
+             order by r.id";
+        let mut stmt = self.storage.db.prepare(sql)?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![card_id.0, NATIVE_PREDICTION_SOURCE],
+                |row| {
+                    Ok(card_curve::Review {
+                        time_ms: row.get(0)?,
+                        ease: row.get(1)?,
+                        predicted: row.get::<_, Option<f64>>(2)?.map(|p| p as f32),
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Bucketed calibration of the predictions recorded during replay: the
     /// model's recall prediction before each answer against its outcome.
     pub(crate) fn rwkv_native_calibration(
@@ -2063,6 +2221,85 @@ mod test {
             .map(|(_, p)| p)
             .collect();
         assert_same(&live, &reference);
+    }
+
+    #[test]
+    fn card_curve_matches_the_card_prediction() {
+        if weights("sm92").is_none() {
+            return;
+        }
+        let mut fix = fixture(20, 8, true, false);
+        let dir = tempfile::tempdir().unwrap();
+        let _ = load(&mut fix.col, dir.path(), false);
+        let _ = fix.col.rwkv_native_sync(false).unwrap();
+        let card_id = fix.col.get_next_card().unwrap().unwrap().card.id;
+        let prediction = fix.col.rwkv_native_card_prediction(card_id).unwrap();
+        let before = fix.col.rwkv_native_status().unwrap();
+
+        let card = fix.col.storage.get_card(card_id).unwrap().unwrap();
+        let mut note = fix.col.storage.get_note(card.note_id).unwrap().unwrap();
+        note.set_field(0, "<b>hola</b>").unwrap();
+        note.set_field(1, "hello").unwrap();
+        fix.col.update_note(&mut note).unwrap();
+        // Editing a note leaves the review history, and so the state, as is.
+        let _ = fix.col.rwkv_native_sync(false).unwrap();
+
+        let days: Vec<f32> = (0..=60).map(|d| d as f32).collect();
+        let curve = fix
+            .col
+            .rwkv_native_card_curve(Some(card_id), false, &days)
+            .unwrap();
+        assert!(curve.available);
+        assert_eq!(curve.days.len(), days.len());
+        for series in [
+            &curve.now,
+            &curve.again,
+            &curve.hard,
+            &curve.good,
+            &curve.easy,
+        ] {
+            assert_eq!(series.len(), days.len());
+            assert!(series.iter().all(|r| (0.0..=1.0).contains(r)));
+            // Forgetting curves never rise.
+            assert!(series.windows(2).all(|w| w[1] <= w[0] + 1e-6));
+        }
+        // Recall now is the card prediction's curve recall.
+        let now = prediction.curve_retrievability.unwrap();
+        assert!(
+            (curve.now[0] - now).abs() < 1e-3,
+            "{} vs {now}",
+            curve.now[0]
+        );
+        // Answering Good keeps recall above 90% until its S90.
+        let good_s90 = prediction.s90s[2];
+        let at = |series: &[f32], day: f32| series[(day.floor() as usize).min(60)];
+        if good_s90 >= 1.0 && good_s90 < 59.0 {
+            assert!(at(&curve.good, good_s90.floor()) >= 0.9 - 1e-3);
+            assert!(at(&curve.good, good_s90.ceil() + 1.0) <= 0.9 + 1e-3);
+        }
+        assert!(curve.easy.last() >= curve.again.last());
+        let total: f32 = curve.components.iter().map(|c| c.weight).sum();
+        assert!((total - 1.0).abs() < 1e-3);
+        assert!(curve.components.iter().all(|c| c.s90_days > 0.0));
+        let head = (curve.memory_side * curve.memory_side) as usize;
+        assert!(head > 0 && curve.memory.len() % head == 0);
+        assert!(curve.memory_side > 0, "a reviewed card has a memory state");
+        assert!(!curve.reviews.is_empty());
+        assert!(curve.reviews.iter().any(|r| r.predicted.is_some()));
+        assert_eq!(curve.card_id, card_id.0);
+        assert_eq!(curve.question, "hola");
+        assert_eq!(curve.answer, "hello");
+        // Without a card it picks one.
+        let picked = fix.col.rwkv_native_card_curve(None, true, &days).unwrap();
+        assert!(picked.available && picked.card_id != 0);
+        // Looking changes nothing.
+        let after = fix.col.rwkv_native_status().unwrap();
+        assert_eq!(after.review_count, before.review_count);
+        // (The seconds since the last answer still tick on.)
+        let again = fix.col.rwkv_native_card_prediction(card_id).unwrap();
+        for (a, b) in again.s90s.iter().zip(&prediction.s90s) {
+            assert!((a - b).abs() <= 1e-4 * b.max(1.0));
+        }
     }
 
     #[test]

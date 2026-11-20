@@ -181,6 +181,10 @@ service SchedulerService {
       returns (RwkvNativeCardPredictionResponse);
   rpc RwkvNativeCalibration(RwkvNativeCalibrationRequest)
       returns (RwkvNativeCalibrationResponse);
+  // A look inside RWKV-Curve for one card: its forgetting curves, their
+  // components, a slice of its memory state and its past predictions.
+  rpc RwkvNativeCardCurve(RwkvNativeCardCurveRequest)
+      returns (RwkvNativeCardCurveResponse);
 }
 
 // Implicitly includes any of the above methods that are not listed in the
@@ -1286,4 +1290,48 @@ message RwkvNativeCalibrationResponse {
   float rmse_bins = 4;
   float mean_predicted = 5;
   float mean_observed = 6;
+}
+
+message RwkvNativeCardCurveRequest {
+  // 0 picks a reviewed card in a preset that uses RWKV: the most recently
+  // reviewed one, or with `shuffle` a random one.
+  int64 card_id = 1;
+  // Days from now to sample the curves at.
+  repeated float days = 2;
+  bool shuffle = 3;
+}
+
+message RwkvNativeCardCurveResponse {
+  message Component {
+    // Days until this component falls to 90% recall.
+    float s90_days = 1;
+    float weight = 2;
+  }
+  message Review {
+    // Milliseconds since the epoch (the revlog id).
+    int64 time_ms = 1;
+    // 1 to 4: Again, Hard, Good, Easy.
+    uint32 ease = 2;
+    // RWKV's recall prediction just before the answer, when recorded.
+    optional float predicted = 3;
+  }
+  bool available = 1;
+  repeated float days = 2;
+  // Recall at `days` from now, and after answering Again..Easy now.
+  repeated float now = 3;
+  repeated float again = 4;
+  repeated float hard = 5;
+  repeated float good = 6;
+  repeated float easy = 7;
+  repeated Component components = 8;
+  // The card's first-layer memory matrices, one per head, each
+  // memory_side × memory_side and row-major.
+  repeated float memory = 9;
+  uint32 memory_side = 10;
+  float target_retention = 11;
+  repeated Review reviews = 12;
+  int64 card_id = 13;
+  // The card's question and answer as plain text.
+  string question = 14;
+  string answer = 15;
 }

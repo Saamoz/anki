@@ -882,6 +882,62 @@ impl RwkvInference {
         })
     }
 
+    /// The card's forgetting curve now and after each answer, sampled at
+    /// `days` from now, with the curve's components and a slice of the
+    /// card's memory state. Changes nothing.
+    pub fn review_curve_view(
+        &mut self,
+        input: &ReviewInput,
+        state: ReviewState<'_>,
+        days: &[f32],
+    ) -> io::Result<ReviewCurveView> {
+        let mut query = input.clone();
+        query.is_query = true;
+        query.ease = None;
+        let heads = self.review_heads(&query, &state)?;
+        let answers = self.answer_heads(&query, &state)?;
+        let day = SECONDS_PER_DAY as f32;
+        let elapsed = query
+            .current_elapsed_seconds
+            .filter(|seconds| *seconds >= 0)
+            .map(|seconds| seconds as f32)
+            .or_else(|| {
+                query
+                    .current_elapsed_days
+                    .filter(|days| *days >= 0)
+                    .map(|days| days as f32 * day)
+            });
+        let now = match elapsed {
+            Some(elapsed) => days
+                .iter()
+                .map(|d| predict_curve(&heads.curve, elapsed + d * day))
+                .collect(),
+            None => Vec::new(),
+        };
+        let answers = answers.map(|answer| {
+            days.iter()
+                .map(|d| predict_curve(&answer.curve, d * day))
+                .collect()
+        });
+        let (memory, memory_side) = deserialize_module_state(state.card)?
+            .map(|module| module.into_decoded())
+            .and_then(|module| {
+                let layer = module.layers.into_iter().next()?;
+                let matrix = layer.time?.matrix;
+                let head = HEAD_SIZE * HEAD_SIZE;
+                let heads = matrix.len() / head;
+                (heads > 0).then(|| (matrix[..heads * head].to_vec(), HEAD_SIZE as u32))
+            })
+            .unwrap_or_default();
+        Ok(ReviewCurveView {
+            now,
+            answers,
+            components: curve_components(&heads.curve),
+            memory,
+            memory_side,
+        })
+    }
+
     pub fn predict_many(
         &mut self,
         requests: Vec<ReviewPredictionRequest>,
@@ -6460,6 +6516,34 @@ fn predict_curve(curve: &ReviewCurve, elapsed_seconds: f32) -> f32 {
         raw_probability += weight * 0.9_f32.powf(elapsed_seconds / s_space);
     }
     1e-5 + (1.0 - 2e-5) * raw_probability
+}
+
+/// Each component of `curve` as (days until it falls to 90%, weight).
+fn curve_components(curve: &ReviewCurve) -> Vec<(f32, f32)> {
+    let day = SECONDS_PER_DAY as f32;
+    if let Some((scales, decays)) = &curve.power {
+        return curve
+            .weights
+            .iter()
+            .zip(scales)
+            .zip(decays)
+            .map(|((&w, &s), &d)| {
+                // (1 + t / scale) ^ -decay = 0.9
+                let scale = 1e-7 + s.clamp(-25.0, 25.0).exp();
+                let decay = d.clamp(-25.0, 25.0).exp();
+                (scale * (0.9_f32.powf(-1.0 / decay) - 1.0) / day, w)
+            })
+            .collect();
+    }
+    curve
+        .weights
+        .iter()
+        .enumerate()
+        .map(|(index, &w)| {
+            let s_space_raw = linspace_exp(index, 128, 18.5);
+            ((0.1 + (s_space_raw - 1.0) * (22.0_f32 - 18.5).exp()) / day, w)
+        })
+        .collect()
 }
 
 fn linspace_exp(index: usize, count: usize, point_spread: f32) -> f32 {
